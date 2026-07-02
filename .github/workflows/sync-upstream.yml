@@ -1,0 +1,52 @@
+name: Sync upstream agent catalog
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # Monday 04:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/msitarzewski/agency-agents.git || true
+          git fetch upstream main --no-tags --quiet
+
+      - name: Merge upstream
+        run: |
+          if git merge upstream/main --no-edit --allow-unrelated-histories 2>&1; then
+            echo "MERGED=true" >> "$GITHUB_ENV"
+          else
+            git merge --abort
+            echo "MERGED=false" >> "$GITHUB_ENV"
+            echo "::warning::Merge conflict with upstream — manual resolution required."
+          fi
+
+      - name: Push if merged
+        if: env.MERGED == 'true'
+        run: git push origin main
+
+      - name: Report
+        run: |
+          COUNT=$(find . -name "*.md" \
+            -not -path "./.github/*" \
+            -not -name "README.md" \
+            -not -name "CONTRIBUTING*.md" \
+            -not -name "SECURITY.md" | wc -l | tr -d ' ')
+          echo "Agent catalog total: ${COUNT} .md files"
+          echo "Last upstream commit: $(git log upstream/main -1 --oneline 2>/dev/null || echo 'n/a')"
