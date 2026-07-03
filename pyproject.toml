@@ -1,0 +1,13 @@
+[project]
+name = "ndonga-agents"
+version = "0.1.0"
+description = "Agent catalog and orchestration helpers for Ndonga."
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27.0",
+  "pydantic>=2.7.0",
+  "asyncpg>=0.29.0",
+]
+
+[tool.setuptools]
+packages = ["ndonga_agents"]
