@@ -83,3 +83,6 @@ integrations/codex/agents/*
 integrations/osaurus/agency-*/
 integrations/hermes/agency-agents-router/
 graphify-out/
+
+# Dynamic swarm cache — synthesized agent prompts; ephemeral, not for version control
+yapa-local/dynamic/
