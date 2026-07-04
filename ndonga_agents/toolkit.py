@@ -139,6 +139,34 @@ class Toolkit:
 
 # ── Specialist delegation tool ────────────────────────────────────────────────
 
+class RetrieveOnlineArgs(BaseModel):
+    query: str = Field(description="Specific online search query.")
+    sources: list[str] | None = Field(
+        default=None,
+        description="Optional source hints: web, news, weather, finance.",
+    )
+
+
+class RetrieveOnlineTool(BaseTool):
+    name = "retrieve_online"
+    description = (
+        "Search online sources for fresh public information when KB and surface tools "
+        "are insufficient. Use for news, regulations, rates, and recent events."
+    )
+    args_schema = RetrieveOnlineArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from retrieval_gateway import retrieve_online
+
+        args = self.args_schema.model_validate(kwargs)
+        tenant_id = getattr(self, "tenant_id", "hapakule")
+        return await retrieve_online(
+            query=args.query,
+            tenant_id=tenant_id,
+            sources=args.sources,
+        )
+
+
 class ConsultSpecialistArgs(BaseModel):
     specialist_role: str = Field(
         description=(
@@ -176,7 +204,8 @@ class ConsultSpecialistTool(BaseTool):
 
         # ── Stage 1–3: Route through the static catalog + dynamic cache ───────
         router = SwarmRouter(db_pool=self.db_pool)
-        decision = await router.route(args.specialist_role)
+        tenant_id = getattr(self, "tenant_id", "hapakule")
+        decision = await router.route(args.specialist_role, tenant_id=tenant_id)
 
         system_prompt: str
         routing_label: str
@@ -259,27 +288,50 @@ class ConsultSpecialistTool(BaseTool):
 
 # ── Per-tenant toolkit factories ──────────────────────────────────────────────
 
-def nenda_toolkit(db_pool: Any | None = None) -> Toolkit:
-    """Hapa Kule — travel, experiences, local lifestyle + specialist delegation."""
-    return Toolkit([
-        SearchExperiencesTool(db_pool),
-        SearchEventsTool(db_pool),
-        SearchPlacesTool(db_pool),
-        BuildItineraryTool(db_pool),
-        ConsultSpecialistTool(db_pool),
+def _with_tenant(tool: BaseTool, tenant_id: str) -> BaseTool:
+    tool.tenant_id = tenant_id  # type: ignore[attr-defined]
+    return tool
+
+
+def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
+    """Tenant-aware toolkit — Nenda tools for hapakule, shared online + swarm for all."""
+    tools: list[BaseTool] = []
+    if tenant_id == "hapakule":
+        tools.extend([
+            SearchExperiencesTool(db_pool),
+            SearchEventsTool(db_pool),
+            SearchPlacesTool(db_pool),
+            BuildItineraryTool(db_pool),
+        ])
+    tools.extend([
+        _with_tenant(RetrieveOnlineTool(db_pool), tenant_id),
+        _with_tenant(ConsultSpecialistTool(db_pool), tenant_id),
     ])
+    return Toolkit(tools)
+
+
+def nenda_toolkit(db_pool: Any | None = None) -> Toolkit:
+    return build_toolkit("hapakule", db_pool)
 
 
 def baza_toolkit(db_pool: Any | None = None) -> Toolkit:
-    """Machant — SME commerce, sales, inventory + specialist delegation."""
-    return Toolkit([ConsultSpecialistTool(db_pool)])
+    return build_toolkit("machant", db_pool)
 
 
 def panga_toolkit(db_pool: Any | None = None) -> Toolkit:
-    """Kaya — wealth planning, financial clarity + specialist delegation."""
-    return Toolkit([ConsultSpecialistTool(db_pool)])
+    return build_toolkit("kaya", db_pool)
 
 
 def safiri_toolkit(db_pool: Any | None = None) -> Toolkit:
-    """Al Sabil — Islamic travel + specialist delegation."""
-    return Toolkit([ConsultSpecialistTool(db_pool)])
+    return build_toolkit("alsabil", db_pool)
+
+
+def get_toolkit_for_tenant(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
+    factories = {
+        "hapakule": nenda_toolkit,
+        "machant": baza_toolkit,
+        "kaya": panga_toolkit,
+        "alsabil": safiri_toolkit,
+    }
+    factory = factories.get(tenant_id, nenda_toolkit)
+    return factory(db_pool)

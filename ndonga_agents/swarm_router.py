@@ -65,7 +65,7 @@ class SwarmRouter:
     def __init__(self, db_pool: Any | None = None) -> None:
         self.db_pool = db_pool
 
-    async def route(self, specialist_role: str) -> RoutingDecision:
+    async def route(self, specialist_role: str, tenant_id: str | None = None) -> RoutingDecision:
         """
         Route through the static catalog then the Neon DB dynamic cache.
 
@@ -73,7 +73,7 @@ class SwarmRouter:
         must invoke SwarmSynthesizer to get the system prompt.
         """
         # Search static catalog (yapa-local gets a 0.05 boost inside search_with_confidence)
-        results = search_with_confidence(specialist_role, top_k=5)
+        results = search_with_confidence(specialist_role, top_k=5, tenant_id=tenant_id)
 
         if results:
             best_conf, best_entry = results[0]

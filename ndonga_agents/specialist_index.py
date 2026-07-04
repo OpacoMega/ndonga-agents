@@ -43,6 +43,14 @@ _SKIP_FILENAMES: frozenset[str] = frozenset({
 # Confidence threshold: scores below this trigger dynamic synthesis
 CONFIDENCE_THRESHOLD: float = 0.30
 
+# Sprint D: tenant-scoped swarm categories
+TENANT_SWARM_CATEGORIES: dict[str, frozenset[str]] = {
+    "hapakule": frozenset({"marketing", "design", "strategy", "product", "yapa-local", "specialized"}),
+    "machant": frozenset({"sales", "finance", "engineering", "product", "project-management", "yapa-local"}),
+    "kaya": frozenset({"finance", "strategy", "legal", "yapa-local", "specialized"}),
+    "alsabil": frozenset({"specialized", "strategy", "marketing", "yapa-local"}),
+}
+
 
 class SpecialistEntry(NamedTuple):
     name: str
@@ -151,6 +159,7 @@ def search_specialists(query: str, top_k: int = 3) -> list[SpecialistEntry]:
 def search_with_confidence(
     query: str,
     top_k: int = 3,
+    tenant_id: str | None = None,
 ) -> list[tuple[float, SpecialistEntry]]:
     """
     Return (confidence_score, entry) tuples for the top_k best matches.
@@ -165,9 +174,12 @@ def search_with_confidence(
     query_tokens = _tokenise(query)
     if not query_tokens:
         return []
+    allowed_categories = TENANT_SWARM_CATEGORIES.get(tenant_id or "", None)
     n = len(query_tokens)
     scored: list[tuple[float, int, SpecialistEntry]] = []
     for entry in get_index():
+        if allowed_categories and entry.category not in allowed_categories and entry.origin != "yapa-local":
+            continue
         overlap = len(query_tokens & entry.tokens)
         if overlap == 0:
             continue
