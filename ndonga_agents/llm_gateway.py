@@ -283,6 +283,22 @@ class DeepSeekProvider(OpenRouterProvider):
         }
 
 
+class XAIProvider(OpenRouterProvider):
+    """
+    xAI Grok API — OpenAI-compatible chat completions.
+    Model IDs: grok-3-mini, grok-3, grok-2-1212
+    """
+
+    def __init__(self, *, api_key: str, timeout: float = 45.0) -> None:
+        super().__init__(api_key=api_key, base_url="https://api.x.ai/v1", timeout=timeout)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+
 class MultiProviderGateway:
     """
     Routes model requests across multiple providers in priority order.
@@ -290,6 +306,7 @@ class MultiProviderGateway:
     Model ID format:
       "groq:llama-3.3-70b-versatile"       → Groq provider, model "llama-3.3-70b-versatile"
       "deepseek:deepseek-chat"              → DeepSeek direct, model "deepseek-chat"
+      "xai:grok-3-mini"                     → xAI Grok, model "grok-3-mini"
       "meta-llama/llama-3.3-70b-instruct:free" → OpenRouter (no prefix = openrouter)
 
     Providers whose keys are not configured are silently skipped.
@@ -363,10 +380,12 @@ def build_gateway() -> MultiProviderGateway:
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
     groq_key = os.environ.get("GROQ_API_KEY", "")
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    xai_key = os.environ.get("XAI_API_KEY", "")
     return MultiProviderGateway({
         "openrouter": OpenRouterProvider(api_key=openrouter_key) if openrouter_key else None,
         "groq": GroqProvider(api_key=groq_key) if groq_key else None,
         "deepseek": DeepSeekProvider(api_key=deepseek_key) if deepseek_key else None,
+        "xai": XAIProvider(api_key=xai_key) if xai_key else None,
     })
 
 
