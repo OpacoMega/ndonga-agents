@@ -3,20 +3,18 @@ Ndonga Swarm Synthesizer — dynamically generates bespoke specialist personas.
 
 When the static 221 + 50 agent catalog doesn't have a good match for a query,
 this module calls the Starlight model to synthesize a purpose-built system
-prompt on the fly. Generated prompts are cached to disk so identical queries
-get the pre-synthesized specialist on the next call.
+prompt on the fly. Generated prompts are cached to the Neon DB so they survive
+Fly.io deploys — identical queries get the pre-synthesized specialist on the
+next call without a round-trip to the LLM.
 """
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import os
-import re
-from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("ndonga.swarm_synthesizer")
-
-_CACHE_DIR = Path(__file__).resolve().parent.parent / "yapa-local" / "dynamic"
 
 _ARCHITECT_SYSTEM = """\
 You are an Expert Agent Architect for Ndonga, Africa's premier AI platform. \
@@ -66,6 +64,12 @@ _SYNTHESIS_MODEL_CHAIN: list[str] = [
 ]
 
 
+def _compute_hash(specialist_role: str, user_query: str) -> str:
+    """SHA-256 of 'specialist_role|user_query[:200]', returned as hex."""
+    key = f"{specialist_role}|{user_query[:200]}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
 class SwarmSynthesizer:
     """Dynamically synthesizes specialist agent system prompts via Starlight."""
 
@@ -74,8 +78,10 @@ class SwarmSynthesizer:
         api_key: str | None = None,
         model: str | None = None,
         model_chain: list[str] | None = None,
+        db_pool: Any | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY", "")
+        self.db_pool = db_pool
         # Build deduped model chain: preferred model first, then fallbacks
         preferred = model or _SYNTHESIS_MODEL_CHAIN[0]
         chain: list[str] = []
@@ -151,48 +157,57 @@ class SwarmSynthesizer:
             f"Last error: {last_exc}"
         ) from last_exc
 
-    def cache_prompt(
+    async def _save_to_db(
         self,
         specialist_role: str,
-        user_query: str,
         system_prompt: str,
-    ) -> Path:
-        """
-        Persist a synthesized prompt to yapa-local/dynamic/<slug>.json.
-        Returns the path it was written to.
-        """
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        slug = _slugify(specialist_role)
-        path = _CACHE_DIR / f"{slug}.json"
-        payload: dict = {}
-        if path.exists():
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                payload = {}
-        payload.update({
-            "slug": slug,
-            "query": specialist_role,
-            "sample_user_query": user_query,
-            "system_prompt": system_prompt,
-            "use_count": payload.get("use_count", 0) + 1,
-        })
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        logger.debug("cached | slug=%s | path=%s", slug, path)
-        return path
+        query_hash: str,
+    ) -> None:
+        """Upsert synthesized prompt into dynamic_swarm_cache. Logs on failure, never raises."""
+        if not self.db_pool:
+            logger.warning("db_pool not set — dynamic prompt not persisted to DB")
+            return
+        try:
+            await self.db_pool.execute(
+                """
+                INSERT INTO dynamic_swarm_cache (query_hash, agent_name, system_prompt)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (query_hash) DO UPDATE
+                    SET last_used_at = NOW()
+                """,
+                query_hash, specialist_role, system_prompt,
+            )
+            logger.debug("cached_db | role=%s | hash=%s", specialist_role, query_hash[:16])
+        except Exception as exc:
+            logger.error("cache_db_write_error | role=%s | %s", specialist_role, exc)
 
     async def synthesize_and_cache(
         self,
         specialist_role: str,
         user_query: str,
-    ) -> tuple[str, Path]:
-        """Synthesize a system prompt and immediately cache it. Returns (prompt, cache_path)."""
+    ) -> tuple[str, str]:
+        """
+        Check Neon DB cache first; synthesize and persist on miss.
+        Returns (system_prompt, query_hash).
+        """
+        query_hash = _compute_hash(specialist_role, user_query)
+
+        if self.db_pool:
+            try:
+                row = await self.db_pool.fetchrow(
+                    "SELECT system_prompt FROM dynamic_swarm_cache WHERE query_hash = $1",
+                    query_hash,
+                )
+                if row:
+                    await self.db_pool.execute(
+                        "UPDATE dynamic_swarm_cache SET last_used_at = NOW() WHERE query_hash = $1",
+                        query_hash,
+                    )
+                    logger.info("cache_hit_db | role=%s | hash=%s", specialist_role, query_hash[:16])
+                    return row["system_prompt"], query_hash
+            except Exception as exc:
+                logger.warning("cache_db_read_error | role=%s | %s — synthesizing fresh", specialist_role, exc)
+
         prompt = await self.synthesize_agent(specialist_role, user_query)
-        path = self.cache_prompt(specialist_role, user_query, prompt)
-        return prompt, path
-
-
-def _slugify(text: str) -> str:
-    """Turn a free-text role description into a filesystem-safe slug."""
-    slug = re.sub(r"[^a-z0-9]+", "_", text.lower().strip())
-    return slug[:80].strip("_") or "agent"
+        await self._save_to_db(specialist_role, prompt, query_hash)
+        return prompt, query_hash

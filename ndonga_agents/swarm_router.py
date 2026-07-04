@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from .specialist_index import (
     CONFIDENCE_THRESHOLD,
     SpecialistEntry,
+    _tokenise,
     search_with_confidence,
-    search_dynamic_cache,
     load_specialist_prompt,
 )
 
@@ -53,7 +53,7 @@ class SwarmRouter:
 
     Stage 1: Search yapa-local (Tier 2) specialists with confidence scoring.
     Stage 2: Search upstream (Tier 3) specialists with confidence scoring.
-    Stage 3: Check the dynamic cache for a previously synthesized match.
+    Stage 3: Check dynamic_swarm_cache in Neon for a previously synthesized match.
     Stage 4: Signal that a SwarmSynthesizer call is needed.
 
     The router picks the highest-confidence result across all stages and
@@ -62,9 +62,12 @@ class SwarmRouter:
 
     COMPOSITE_THRESHOLD: float = 0.55  # above this, try to find a second agent
 
-    def route(self, specialist_role: str) -> RoutingDecision:
+    def __init__(self, db_pool: Any | None = None) -> None:
+        self.db_pool = db_pool
+
+    async def route(self, specialist_role: str) -> RoutingDecision:
         """
-        Synchronous route — no LLM calls, purely keyword-based.
+        Route through the static catalog then the Neon DB dynamic cache.
 
         Returns a RoutingDecision. If `needs_synthesis` is True, the caller
         must invoke SwarmSynthesizer to get the system prompt.
@@ -98,13 +101,13 @@ class SwarmRouter:
         else:
             static_best = (0.0, None)
 
-        # Check dynamic cache
-        cached = search_dynamic_cache(specialist_role)
+        # Check Neon DB dynamic cache
+        cached = await self._search_db_cache(specialist_role)
         if cached:
             system_prompt = cached.get("system_prompt", "")
             logger.info(
-                "routed_dynamic_cache | role=%s | slug=%s",
-                specialist_role, cached.get("slug"),
+                "routed_dynamic_cache | role=%s | agent=%s",
+                specialist_role, cached.get("agent_name"),
             )
             return RoutingDecision(
                 routing_type="dynamic-cache",
@@ -112,7 +115,7 @@ class SwarmRouter:
                 system_prompt=system_prompt,
                 confidence=CONFIDENCE_THRESHOLD,  # cache hit = at-threshold confidence
                 cached_entry=cached,
-                metadata={"slug": cached.get("slug")},
+                metadata={"agent_name": cached.get("agent_name")},
             )
 
         # No static match above threshold, no cache hit → need synthesis
@@ -127,6 +130,52 @@ class SwarmRouter:
             confidence=static_best[0],
             metadata={"best_static": static_best[1].name if static_best[1] else None},
         )
+
+    async def _search_db_cache(self, specialist_role: str) -> dict | None:
+        """
+        Keyword-token search over dynamic_swarm_cache rows in Neon.
+        Loads up to 500 most-recently-used rows and applies the same token-overlap
+        scoring as the static catalog. Updates last_used_at on a hit.
+        Returns a row-like dict or None.
+        """
+        if not self.db_pool:
+            return None
+        q_tokens = _tokenise(specialist_role)
+        if not q_tokens:
+            return None
+        try:
+            rows = await self.db_pool.fetch(
+                "SELECT query_hash, agent_name, system_prompt "
+                "FROM dynamic_swarm_cache "
+                "ORDER BY last_used_at DESC LIMIT 500"
+            )
+        except Exception as exc:
+            logger.warning("db_cache_read_error | role=%s | %s", specialist_role, exc)
+            return None
+
+        best: tuple[float, dict] | None = None
+        for row in rows:
+            cached_tokens = _tokenise(row["agent_name"])
+            if not cached_tokens:
+                continue
+            overlap = len(q_tokens & cached_tokens)
+            confidence = overlap / len(q_tokens)
+            if confidence >= CONFIDENCE_THRESHOLD:
+                if best is None or confidence > best[0]:
+                    best = (confidence, dict(row))
+
+        if best is None:
+            return None
+
+        match = best[1]
+        try:
+            await self.db_pool.execute(
+                "UPDATE dynamic_swarm_cache SET last_used_at = NOW() WHERE query_hash = $1",
+                match["query_hash"],
+            )
+        except Exception as exc:
+            logger.warning("db_cache_update_error | %s", exc)
+        return match
 
     def top_candidates(
         self, specialist_role: str, top_k: int = 3

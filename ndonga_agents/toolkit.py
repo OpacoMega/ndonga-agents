@@ -175,8 +175,8 @@ class ConsultSpecialistTool(BaseTool):
             return {"error": "OPENROUTER_API_KEY not configured — cannot consult specialist."}
 
         # ── Stage 1–3: Route through the static catalog + dynamic cache ───────
-        router = SwarmRouter()
-        decision = router.route(args.specialist_role)
+        router = SwarmRouter(db_pool=self.db_pool)
+        decision = await router.route(args.specialist_role)
 
         system_prompt: str
         routing_label: str
@@ -187,7 +187,7 @@ class ConsultSpecialistTool(BaseTool):
             routing_label = decision.routing_type
             specialist_name = (
                 decision.specialist.name if decision.specialist
-                else decision.cached_entry.get("slug", "cached") if decision.cached_entry
+                else decision.cached_entry.get("agent_name", "cached") if decision.cached_entry
                 else "cached"
             )
             category = (
@@ -201,17 +201,17 @@ class ConsultSpecialistTool(BaseTool):
         else:
             # ── Stage 4: Dynamic synthesis ────────────────────────────────────
             routing_label = "dynamic-synthesize"
-            synthesizer = SwarmSynthesizer(api_key=api_key)
+            synthesizer = SwarmSynthesizer(api_key=api_key, db_pool=self.db_pool)
             try:
-                system_prompt, cache_path = await synthesizer.synthesize_and_cache(
+                system_prompt, query_hash = await synthesizer.synthesize_and_cache(
                     specialist_role=args.specialist_role,
                     user_query=args.query,
                 )
                 specialist_name = f"Synthesized: {args.specialist_role}"
                 category = "dynamic"
                 logger.info(
-                    "specialist_synthesized | role=%s | cached_to=%s",
-                    args.specialist_role, cache_path,
+                    "specialist_synthesized | role=%s | hash=%s",
+                    args.specialist_role, query_hash[:16],
                 )
             except RuntimeError as exc:
                 logger.error("synthesis_failed | role=%s | %s", args.specialist_role, exc)
