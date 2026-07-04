@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -247,6 +248,126 @@ class OpenRouterProvider(BaseLLMProvider):
                         exc,
                     )
                     raise LLMGatewayError(f"Stream timed out after {chunk_count} chunks", status_code=None) from exc
+
+
+class GroqProvider(OpenRouterProvider):
+    """
+    Groq LPU inference — same OpenAI-compatible API, 800+ tok/s on Llama 70B.
+    Free tier: 14,400 req/day, 500k tokens/day per model.
+    Model IDs (no org prefix): llama-3.3-70b-versatile, deepseek-r1-distill-llama-70b, qwen-qwq-32b
+    """
+
+    def __init__(self, *, api_key: str, timeout: float = 45.0) -> None:
+        super().__init__(api_key=api_key, base_url="https://api.groq.com/openai/v1", timeout=timeout)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+
+class DeepSeekProvider(OpenRouterProvider):
+    """
+    DeepSeek direct API — OpenAI-compatible, generous free tier.
+    Model IDs: deepseek-chat (V3), deepseek-reasoner (R1)
+    """
+
+    def __init__(self, *, api_key: str, timeout: float = 45.0) -> None:
+        super().__init__(api_key=api_key, base_url="https://api.deepseek.com/v1", timeout=timeout)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+
+class MultiProviderGateway:
+    """
+    Routes model requests across multiple providers in priority order.
+
+    Model ID format:
+      "groq:llama-3.3-70b-versatile"       → Groq provider, model "llama-3.3-70b-versatile"
+      "deepseek:deepseek-chat"              → DeepSeek direct, model "deepseek-chat"
+      "meta-llama/llama-3.3-70b-instruct:free" → OpenRouter (no prefix = openrouter)
+
+    Providers whose keys are not configured are silently skipped.
+    """
+
+    def __init__(self, providers: dict[str, BaseLLMProvider | None]) -> None:
+        self._providers: dict[str, BaseLLMProvider] = {
+            name: p for name, p in providers.items() if p is not None
+        }
+
+    def _resolve(self, model_id: str) -> tuple[BaseLLMProvider | None, str]:
+        """Parse 'provider:model' or plain model_id → (provider, clean_model_id)."""
+        parts = model_id.split(":", 1)
+        if len(parts) == 2 and parts[0] in self._providers:
+            return self._providers[parts[0]], parts[1]
+        openrouter = self._providers.get("openrouter")
+        return openrouter, model_id
+
+    def is_available(self, model_id: str) -> bool:
+        provider, _ = self._resolve(model_id)
+        return provider is not None
+
+    async def achat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> UnifiedLLMResponse:
+        provider, clean_model = self._resolve(model)
+        if provider is None:
+            raise LLMGatewayError(f"No provider available for model: {model}", status_code=None)
+        return await provider.achat(
+            model=clean_model,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def achat_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        provider, clean_model = self._resolve(model)
+        if provider is None:
+            raise LLMGatewayError(f"No provider available for model: {model}", status_code=None)
+        async for chunk in provider.achat_stream(
+            model=clean_model,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            yield chunk
+
+
+def build_gateway() -> MultiProviderGateway:
+    """
+    Construct the shared MultiProviderGateway from environment keys.
+    Providers whose key is absent or empty are silently excluded so the
+    gateway degrades gracefully on environments that only have OpenRouter.
+    """
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    return MultiProviderGateway({
+        "openrouter": OpenRouterProvider(api_key=openrouter_key) if openrouter_key else None,
+        "groq": GroqProvider(api_key=groq_key) if groq_key else None,
+        "deepseek": DeepSeekProvider(api_key=deepseek_key) if deepseek_key else None,
+    })
 
 
 def _chunk_from_openai_delta(data: dict[str, Any]) -> StreamChunk:
