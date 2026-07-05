@@ -205,6 +205,31 @@ class DiraRecommendTool(BaseTool):
         )
 
 
+class PrepareBookingLinkArgs(BaseModel):
+    slug: str = Field(description="Live Hapa Kule experience slug.")
+    departure_id: str | None = Field(default=None, description="Optional departure id from search_events.")
+    travelers: int = Field(default=1, description="Number of travelers.")
+
+
+class PrepareBookingLinkTool(BaseTool):
+    name = "prepare_booking_link"
+    description = (
+        "Return listing and checkout URLs for a live Hapa Kule experience. "
+        "Use when the guest is ready to book a specific slug."
+    )
+    args_schema = PrepareBookingLinkArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from hapakule_catalog import prepare_booking_link
+
+        args = self.args_schema.model_validate(kwargs)
+        return await prepare_booking_link(
+            args.slug,
+            departure_id=args.departure_id,
+            travelers=args.travelers,
+        )
+
+
 class Toolkit:
     def __init__(self, tools: list[BaseTool] | None = None) -> None:
         self._tools: dict[str, BaseTool] = {}
@@ -426,6 +451,7 @@ def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
             SearchPlacesTool(db_pool),
             BuildItineraryTool(db_pool),
             DiraRecommendTool(db_pool),
+            PrepareBookingLinkTool(db_pool),
         ])
     if tenant_id == "machant":
         tools.extend([
