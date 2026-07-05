@@ -116,6 +116,66 @@ class BuildItineraryTool(BaseTool):
         return await build_itinerary(args.location, args.budget, args.interests, self.db_pool)
 
 
+class EnterpriseScopeArgs(BaseModel):
+    enterprise_id: str | None = Field(
+        default=None,
+        description="Merchant or estate UUID. Uses demo data when omitted.",
+    )
+    days: int = Field(default=7, description="Lookback window in days (1-30).")
+
+
+class GetSalesSummaryTool(BaseTool):
+    name = "get_sales_summary"
+    description = "Summarize merchant sales revenue and transactions for a recent period."
+    args_schema = EnterpriseScopeArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from product_data import get_sales_summary
+
+        args = self.args_schema.model_validate(kwargs)
+        return await get_sales_summary(
+            enterprise_id=args.enterprise_id,
+            days=args.days,
+            db_pool=self.db_pool,
+        )
+
+
+class GetLowStockItemsTool(BaseTool):
+    name = "get_low_stock_items"
+    description = "List inventory SKUs at or below reorder point."
+    args_schema = EnterpriseScopeArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from product_data import get_low_stock_items
+
+        args = self.args_schema.model_validate(kwargs)
+        return await get_low_stock_items(enterprise_id=args.enterprise_id, db_pool=self.db_pool)
+
+
+class GetDailySummaryTool(BaseTool):
+    name = "get_daily_summary"
+    description = "Daily business snapshot: revenue, transactions, and inventory alerts."
+    args_schema = EnterpriseScopeArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from product_data import get_daily_summary
+
+        args = self.args_schema.model_validate(kwargs)
+        return await get_daily_summary(enterprise_id=args.enterprise_id, db_pool=self.db_pool)
+
+
+class GetCashflowTool(BaseTool):
+    name = "get_cashflow"
+    description = "Kaya estate cashflow and net worth movement for a time window."
+    args_schema = EnterpriseScopeArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from product_data import get_cashflow
+
+        args = self.args_schema.model_validate(kwargs)
+        return await get_cashflow(enterprise_id=args.enterprise_id, db_pool=self.db_pool)
+
+
 class Toolkit:
     def __init__(self, tools: list[BaseTool] | None = None) -> None:
         self._tools: dict[str, BaseTool] = {}
@@ -337,6 +397,14 @@ def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
             SearchPlacesTool(db_pool),
             BuildItineraryTool(db_pool),
         ])
+    if tenant_id == "machant":
+        tools.extend([
+            GetSalesSummaryTool(db_pool),
+            GetLowStockItemsTool(db_pool),
+            GetDailySummaryTool(db_pool),
+        ])
+    if tenant_id == "kaya":
+        tools.append(GetCashflowTool(db_pool))
     tools.extend([
         _with_tenant(GenerateImageTool(db_pool), tenant_id),
         _with_tenant(RetrieveOnlineTool(db_pool), tenant_id),
