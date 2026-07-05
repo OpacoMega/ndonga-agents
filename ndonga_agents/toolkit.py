@@ -139,6 +139,40 @@ class Toolkit:
 
 # ── Specialist delegation tool ────────────────────────────────────────────────
 
+class GenerateImageArgs(BaseModel):
+    prompt: str = Field(
+        description=(
+            "Detailed image prompt. Include subject, style, lighting, and composition. "
+            "For marketing or design work, be specific about brand tone and audience."
+        )
+    )
+    style: str | None = Field(
+        default=None,
+        description="Optional style override, e.g. editorial photography, flat illustration, street art.",
+    )
+
+
+class GenerateImageTool(BaseTool):
+    name = "generate_image"
+    description = (
+        "Generate an AI image from a detailed prompt using Grok Imagine (xAI). "
+        "Use for marketing visuals, lifestyle scenes, product mockups, and design concepts. "
+        "Do not use for explicit, violent, or harmful content."
+    )
+    args_schema = GenerateImageArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from image_generation import generate_image_asset
+
+        args = self.args_schema.model_validate(kwargs)
+        tenant_id = getattr(self, "tenant_id", "hapakule")
+        return await generate_image_asset(
+            args.prompt,
+            tenant_id=tenant_id,
+            style=args.style,
+        )
+
+
 class RetrieveOnlineArgs(BaseModel):
     query: str = Field(description="Specific online search query.")
     sources: list[str] | None = Field(
@@ -304,6 +338,7 @@ def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
             BuildItineraryTool(db_pool),
         ])
     tools.extend([
+        _with_tenant(GenerateImageTool(db_pool), tenant_id),
         _with_tenant(RetrieveOnlineTool(db_pool), tenant_id),
         _with_tenant(ConsultSpecialistTool(db_pool), tenant_id),
     ])
