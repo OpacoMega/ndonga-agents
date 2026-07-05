@@ -176,6 +176,35 @@ class GetCashflowTool(BaseTool):
         return await get_cashflow(enterprise_id=args.enterprise_id, db_pool=self.db_pool)
 
 
+class DiraRecommendArgs(BaseModel):
+    raw_query: str = Field(description="Natural language travel request for ranked bundles.")
+    session_id: str | None = Field(default=None, description="Optional Dira session id.")
+    mood: str | None = Field(default=None, description="Optional mood signal, e.g. restorative.")
+    corridor: str | None = Field(default=None, description="Optional corridor slug, e.g. coast.")
+    occasion: str | None = Field(default=None, description="Optional occasion, e.g. long_weekend.")
+
+
+class DiraRecommendTool(BaseTool):
+    name = "dira_recommend"
+    description = (
+        "Ranked Hapa Kule travel recommendations from the Dira engine. "
+        "Use for mood/corridor planning, bundle suggestions, and gap-aware guidance."
+    )
+    args_schema = DiraRecommendArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from dira_recommend import dira_recommend
+
+        args = self.args_schema.model_validate(kwargs)
+        return await dira_recommend(
+            raw_query=args.raw_query,
+            session_id=args.session_id,
+            mood=args.mood,
+            corridor=args.corridor,
+            occasion=args.occasion,
+        )
+
+
 class Toolkit:
     def __init__(self, tools: list[BaseTool] | None = None) -> None:
         self._tools: dict[str, BaseTool] = {}
@@ -396,6 +425,7 @@ def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
             SearchEventsTool(db_pool),
             SearchPlacesTool(db_pool),
             BuildItineraryTool(db_pool),
+            DiraRecommendTool(db_pool),
         ])
     if tenant_id == "machant":
         tools.extend([
