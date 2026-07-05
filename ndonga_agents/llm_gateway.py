@@ -58,6 +58,7 @@ class DeltaFunction:
 @dataclass
 class ChoiceDelta:
     content: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[ToolCallDelta] | None = None
 
 
@@ -410,6 +411,7 @@ def _chunk_from_openai_delta(data: dict[str, Any]) -> StreamChunk:
             StreamChoice(
                 delta=ChoiceDelta(
                     content=delta.get("content"),
+                    reasoning_content=delta.get("reasoning_content"),
                     tool_calls=tool_calls or None,
                 ),
                 finish_reason=choice.get("finish_reason"),
