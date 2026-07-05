@@ -164,6 +164,30 @@ class GetDailySummaryTool(BaseTool):
         return await get_daily_summary(enterprise_id=args.enterprise_id, db_pool=self.db_pool)
 
 
+class GetTopProductsArgs(BaseModel):
+    enterprise_id: str | None = Field(
+        default=None,
+        description="Merchant UUID. Uses demo data when omitted.",
+    )
+    limit: int = Field(default=5, description="Number of top products to return (1-20).")
+
+
+class GetTopProductsTool(BaseTool):
+    name = "get_top_products"
+    description = "List the merchant's top revenue-generating products by units sold and revenue."
+    args_schema = GetTopProductsArgs
+
+    async def arun(self, **kwargs: Any) -> Any:
+        from product_data import get_top_products
+
+        args = self.args_schema.model_validate(kwargs)
+        return await get_top_products(
+            enterprise_id=args.enterprise_id,
+            limit=args.limit,
+            db_pool=self.db_pool,
+        )
+
+
 class GetCashflowTool(BaseTool):
     name = "get_cashflow"
     description = "Kaya estate cashflow and net worth movement for a time window."
@@ -458,6 +482,7 @@ def build_toolkit(tenant_id: str, db_pool: Any | None = None) -> Toolkit:
             GetSalesSummaryTool(db_pool),
             GetLowStockItemsTool(db_pool),
             GetDailySummaryTool(db_pool),
+            GetTopProductsTool(db_pool),
         ])
     if tenant_id == "kaya":
         tools.append(GetCashflowTool(db_pool))
