@@ -120,6 +120,80 @@ class OpenRouterProvider(BaseLLMProvider):
             "X-Title": "Ndonga",
         }
 
+    def _provider_preferences(self) -> dict[str, Any] | None:
+        """Build OpenRouter's enterprise routing policy from environment."""
+        if "openrouter.ai" not in self.base_url:
+            return None
+
+        preferences: dict[str, Any] = {
+            "allow_fallbacks": os.getenv("OPENROUTER_ALLOW_PROVIDER_FALLBACKS", "true").lower()
+            in {"1", "true", "yes", "on"},
+            "require_parameters": os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "true").lower()
+            in {"1", "true", "yes", "on"},
+            "data_collection": os.getenv("OPENROUTER_DATA_COLLECTION", "deny"),
+        }
+        if os.getenv("OPENROUTER_ZDR", "true").lower() in {"1", "true", "yes", "on"}:
+            preferences["zdr"] = True
+        for env_name, field_name in (
+            ("OPENROUTER_PROVIDER_ORDER", "order"),
+            ("OPENROUTER_PROVIDER_ONLY", "only"),
+            ("OPENROUTER_PROVIDER_IGNORE", "ignore"),
+            ("OPENROUTER_QUANTIZATIONS", "quantizations"),
+        ):
+            values = [value.strip() for value in os.getenv(env_name, "").split(",") if value.strip()]
+            if values:
+                preferences[field_name] = values
+        sort = os.getenv("OPENROUTER_PROVIDER_SORT", "").strip()
+        if sort:
+            preferences["sort"] = sort
+        for env_name, field_name in (
+            ("OPENROUTER_PREFERRED_MAX_LATENCY_SECONDS", "preferred_max_latency"),
+            ("OPENROUTER_PREFERRED_MIN_THROUGHPUT", "preferred_min_throughput"),
+        ):
+            raw = os.getenv(env_name, "").strip()
+            if raw:
+                try:
+                    preferences[field_name] = float(raw)
+                except ValueError:
+                    logger.warning("Ignoring invalid %s=%r", env_name, raw)
+        max_prompt = os.getenv("OPENROUTER_MAX_PROMPT_PRICE", "").strip()
+        max_completion = os.getenv("OPENROUTER_MAX_COMPLETION_PRICE", "").strip()
+        if max_prompt or max_completion:
+            max_price: dict[str, float] = {}
+            try:
+                if max_prompt:
+                    max_price["prompt"] = float(max_prompt)
+                if max_completion:
+                    max_price["completion"] = float(max_completion)
+            except ValueError:
+                logger.warning("Ignoring invalid OpenRouter max price configuration")
+            else:
+                preferences["max_price"] = max_price
+        return preferences
+
+    def _payload(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: bool,
+        tools: list[dict[str, Any]] | None,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        provider = self._provider_preferences()
+        if provider:
+            payload["provider"] = provider
+        return payload
+
     async def achat(
         self,
         *,
@@ -129,14 +203,14 @@ class OpenRouterProvider(BaseLLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> UnifiedLLMResponse:
-        payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        payload = self._payload(
+            model=model,
+            messages=messages,
+            stream=False,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(f"{self.base_url}/chat/completions", headers=self._headers(), json=payload)
         if response.status_code >= 400:
@@ -167,14 +241,14 @@ class OpenRouterProvider(BaseLLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        payload = self._payload(
+            model=model,
+            messages=messages,
+            stream=True,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
         logger.info(
             "LLM gateway stream start | provider=openrouter | model=%s | messages=%s | tools=%s | max_tokens=%s",
             model,
